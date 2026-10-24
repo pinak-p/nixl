@@ -43,6 +43,27 @@ def _is_torch_tensor(obj: object) -> bool:
     return torch is not None and isinstance(obj, torch.Tensor)
 
 
+def _tensor_addr(tensor: torch.Tensor) -> int:
+    """Return the device address of the first element of a tensor.
+
+    On AWS Neuron (torch-neuronx), data_ptr() is a host placeholder that the
+    Neuron runtime and the EFA provider do not recognize. torch-neuronx exposes
+    the HBM address through torch_neuronx.device_address(), which also waits
+    for the asynchronous allocation to complete.
+    """
+    if tensor.device.type != "neuron":
+        return tensor.data_ptr()
+    torch_neuronx = sys.modules.get("torch_neuronx")
+    device_address = getattr(torch_neuronx, "device_address", None)
+    if device_address is None:
+        raise RuntimeError(
+            "Cannot get the device address of a Neuron tensor: "
+            "torch_neuronx.device_address() is not available. Upgrade torch-neuronx, "
+            "or pass (addr, len, dev_id, meta) descriptors with mem_type='VRAM'."
+        )
+    return device_address(tensor)
+
+
 DEFAULT_COMM_PORT = nixlBind.DEFAULT_COMM_PORT
 
 
@@ -1041,7 +1062,7 @@ class nixl_agent:
         elif _is_torch_tensor(descs):
             if descs.is_contiguous():
                 mem_type = self._tensor_mem_type(descs)
-                base_addr = descs.data_ptr()
+                base_addr = _tensor_addr(descs)
                 region_len = descs.numel() * descs.element_size()
                 gpu_id = descs.get_device()
                 if gpu_id == -1:  # DRAM
@@ -1082,7 +1103,7 @@ class nixl_agent:
                 if not descs[i].is_contiguous():
                     logger.error("Please use a list of contiguous Tensors")
                     return None
-                base_addr = descs[i].data_ptr()
+                base_addr = _tensor_addr(descs[i])
                 region_len = descs[i].numel() * descs[i].element_size()
                 gpu_id = descs[i].get_device()
                 if gpu_id == -1:  # DRAM
@@ -1159,7 +1180,7 @@ class nixl_agent:
         elif _is_torch_tensor(descs):
             if descs.is_contiguous():
                 mem_type = self._tensor_mem_type(descs)
-                base_addr = descs.data_ptr()
+                base_addr = _tensor_addr(descs)
                 region_len = descs.numel() * descs.element_size()
                 gpu_id = descs.get_device()
                 if gpu_id == -1:  # DRAM
@@ -1200,7 +1221,7 @@ class nixl_agent:
                 if not descs[i].is_contiguous():
                     logger.error("Please use a list of contiguous Tensors")
                     return None
-                base_addr = descs[i].data_ptr()
+                base_addr = _tensor_addr(descs[i])
                 region_len = descs[i].numel() * descs[i].element_size()
                 gpu_id = descs[i].get_device()
                 if gpu_id == -1:  # DRAM
